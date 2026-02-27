@@ -237,25 +237,42 @@ class ConLicitacaoScraper:
 
             await self._delay()
 
-            # Na pgina do calendrio/lista, encontrar o ltimo boletim
-            # O texto costuma ser "Boletim 1", "Boletim 2", etc.
-            # Vamos buscar todos os links que contm "Boletim" e pegar o de maior nmero
-            links_locator = self.page.locator('a:has-text("Boletim")')
-            links_count = await links_locator.count()
+            # Na página do calendário/lista, encontrar o boletim
+            # Às vezes o link não é um 'a' direto ou o texto está em maiúsculas
+            await asyncio.sleep(2) # Pequena espera extra para renderização SPA
             
-            if links_count == 0:
-                logger.warning("Nenhum link 'Boletim' encontrado na lista/calendrio")
+            # Tentar encontrar via texto contendo "Boletim" em qualquer elemento clicável
+            selectors = [
+                'a:has-text("Boletim")',
+                'button:has-text("Boletim")',
+                'div[role="button"]:has-text("Boletim")',
+                '.boletim-link',
+                'a:has-text("Edição")'
+            ]
+            
+            links_locator = None
+            for sel in selectors:
+                loc = self.page.locator(sel)
+                if await loc.count() > 0:
+                    links_locator = loc
+                    logger.info(f" Links encontrados via selector: {sel}")
+                    break
+            
+            if not links_locator:
+                # Screenshot de debug se não encontrar nada
+                debug_path = os.path.join(config.DOWNLOAD_DIR, "debug_boletins_error.png")
+                await self.page.screenshot(path=debug_path)
+                logger.warning(f"Nenhum link de boletim encontrado. Screenshot salvo em: {debug_path}")
                 return False
 
-            # Pegar todos os textos de uma vez para maior performance e evitar timeouts no nth()
+            links_count = await links_locator.count()
             texts = await links_locator.all_inner_texts()
-            # Pegar todos os hrefs
             hrefs = []
             for i in range(links_count):
                 h = await links_locator.nth(i).get_attribute("href")
                 hrefs.append(h or "")
 
-            logger.info(f"Encontrados {links_count} links de boletim: {[t for t in texts if t]}")
+            logger.info(f"Encontrados {links_count} links: {[t.strip() for t in texts if t.strip()]}")
             
             latest_link_idx = 0
             if boletim_number:
