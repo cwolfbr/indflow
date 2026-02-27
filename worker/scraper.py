@@ -277,7 +277,8 @@ class ConLicitacaoScraper:
                         break
                 
                 if not found:
-                    logger.warning(f" Boletim {boletim_number} não encontrado na lista: {[t.replace('\xa0', ' ') for t in texts]}")
+                    clean_texts_list = [t.replace('\xa0', ' ') for t in texts]
+                    logger.warning(f" Boletim {boletim_number} não encontrado na lista: {clean_texts_list}")
                     # Se não encontrou, talvez seja melhor não clicar em nada ou manter idx 0?
                     # Por enquanto mantém o fallback para idx 0 para não quebrar fluxos legados
             else:
