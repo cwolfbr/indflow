@@ -4,18 +4,6 @@ FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 # Configurar diretório de trabalho
 WORKDIR /app
 
-# Instalar dependências do sistema necessárias (além das já presentes na imagem base)
-RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libnspr4 \
-    libatspi0 \
-    libasound2 \
-    libgbm1 \
-    libxkbcommon0 \
-    libpango-1.0-0 \
-    libcairo2 \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copiar requirements.txt e instalar dependências Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
