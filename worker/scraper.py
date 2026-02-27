@@ -260,7 +260,7 @@ class ConLicitacaoScraper:
             
             if not links_locator:
                 # Screenshot de debug se não encontrar nada
-                debug_path = os.path.join(config.DOWNLOAD_DIR, "debug_boletins_error.png")
+                debug_path = os.path.join(config.DOWNLOADS_DIR, "debug_boletins_error.png")
                 await self.page.screenshot(path=debug_path)
                 logger.warning(f"Nenhum link de boletim encontrado. Screenshot salvo em: {debug_path}")
                 return False
