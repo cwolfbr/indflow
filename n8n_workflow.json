@@ -1,0 +1,266 @@
+{
+    "name": "IndFlow — Triagem de Licitações (ConLicitação)",
+    "nodes": [
+        {
+            "parameters": {
+                "pollTimes": {
+                    "item": [
+                        {
+                            "mode": "everyMinute",
+                            "value": 5
+                        }
+                    ]
+                },
+                "mailbox": "INBOX",
+                "options": {
+                    "customEmailConfig": "",
+                    "allowUnauthorizedCerts": false
+                },
+                "searchCriteria": {
+                    "searchCriteria": {
+                        "value": {
+                            "sender": "boletim@boletimconlicitacao.com.br"
+                        }
+                    }
+                }
+            },
+            "id": "email-trigger",
+            "name": "📧 Email Trigger",
+            "type": "n8n-nodes-base.emailReadImap",
+            "typeVersion": 2,
+            "position": [
+                250,
+                300
+            ],
+            "credentials": {
+                "imap": {
+                    "id": "CONFIGURE_IMAP_CREDENTIALS",
+                    "name": "Email IMAP — IndFlow"
+                }
+            },
+            "notes": "Monitora e-mails de boletim@boletimconlicitacao.com.br. Configure as credenciais IMAP do email ecommerce@indflow.com.br"
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": false,
+                        "leftValue": "",
+                        "typeValidation": "loose"
+                    },
+                    "conditions": [
+                        {
+                            "id": "filter-conlicitacao",
+                            "leftValue": "={{ $json.subject }}",
+                            "rightValue": "Serviço ConLicitação",
+                            "operator": {
+                                "type": "string",
+                                "operation": "contains"
+                            }
+                        }
+                    ],
+                    "combinator": "and"
+                },
+                "options": {}
+            },
+            "id": "filter-email",
+            "name": "🔍 Filtro ConLicitação",
+            "type": "n8n-nodes-base.filter",
+            "typeVersion": 2,
+            "position": [
+                470,
+                300
+            ],
+            "notes": "Filtra apenas e-mails do ConLicitação pelo assunto"
+        },
+        {
+            "parameters": {
+                "jsCode": "// Extrair número do boletim do assunto\nconst subject = $input.first().json.subject || '';\nconst match = subject.match(/\\[(\\d+)\\]/);\nconst boletimNumber = match ? parseInt(match[1]) : null;\n\n// Extrair HTML do e-mail\nconst emailHtml = $input.first().json.html || $input.first().json.textHtml || '';\n\nreturn [{\n  json: {\n    email_subject: subject,\n    email_html: emailHtml,\n    boletim_number: boletimNumber,\n    download_editais: true,\n    send_whatsapp: true\n  }\n}];"
+            },
+            "id": "prepare-payload",
+            "name": "📋 Preparar Payload",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                690,
+                300
+            ],
+            "notes": "Extrai número do boletim e prepara o payload para o Worker"
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://localhost:8000/process-async",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={{ JSON.stringify($json) }}",
+                "options": {
+                    "timeout": 10000,
+                    "allowUnauthorizedCerts": false
+                }
+            },
+            "id": "call-worker",
+            "name": "🤖 Chamar Worker",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                910,
+                300
+            ],
+            "notes": "Chama o endpoint /process-async do Python Worker. Usa modo assíncrono para evitar timeout."
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    },
+                    "conditions": [
+                        {
+                            "id": "check-success",
+                            "leftValue": "={{ $json.status }}",
+                            "rightValue": "accepted",
+                            "operator": {
+                                "type": "string",
+                                "operation": "equals"
+                            }
+                        }
+                    ],
+                    "combinator": "and"
+                },
+                "options": {}
+            },
+            "id": "check-response",
+            "name": "✅ Verificar Resposta",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                1130,
+                300
+            ],
+            "notes": "Verifica se o Worker aceitou o processamento"
+        },
+        {
+            "parameters": {
+                "content": "=✅ Boletim {{ $('📋 Preparar Payload').item.json.boletim_number }} enviado para processamento!\n\nO Worker está processando o boletim em background. O relatório será enviado via WhatsApp quando concluído.",
+                "options": {}
+            },
+            "id": "log-success",
+            "name": "📝 Log Sucesso",
+            "type": "n8n-nodes-base.stickyNote",
+            "typeVersion": 1,
+            "position": [
+                1350,
+                200
+            ],
+            "notes": "Processamento iniciado com sucesso"
+        },
+        {
+            "parameters": {
+                "content": "=❌ Erro ao processar boletim {{ $('📋 Preparar Payload').item.json.boletim_number }}\n\nVerificar se o Worker está rodando em http://localhost:8000",
+                "options": {}
+            },
+            "id": "log-error",
+            "name": "❌ Log Erro",
+            "type": "n8n-nodes-base.stickyNote",
+            "typeVersion": 1,
+            "position": [
+                1350,
+                420
+            ],
+            "notes": "Erro no processamento"
+        }
+    ],
+    "connections": {
+        "📧 Email Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "🔍 Filtro ConLicitação",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🔍 Filtro ConLicitação": {
+            "main": [
+                [
+                    {
+                        "node": "📋 Preparar Payload",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "📋 Preparar Payload": {
+            "main": [
+                [
+                    {
+                        "node": "🤖 Chamar Worker",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "🤖 Chamar Worker": {
+            "main": [
+                [
+                    {
+                        "node": "✅ Verificar Resposta",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "✅ Verificar Resposta": {
+            "main": [
+                [
+                    {
+                        "node": "📝 Log Sucesso",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "❌ Log Erro",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [
+        {
+            "name": "IndFlow",
+            "createdAt": "2026-02-24T00:00:00.000Z",
+            "updatedAt": "2026-02-24T00:00:00.000Z"
+        },
+        {
+            "name": "Licitações",
+            "createdAt": "2026-02-24T00:00:00.000Z",
+            "updatedAt": "2026-02-24T00:00:00.000Z"
+        }
+    ],
+    "triggerCount": 1
+}

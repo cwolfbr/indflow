@@ -1,0 +1,27 @@
+# Web Scraping
+playwright==1.49.1
+
+# PDF Processing
+pymupdf==1.25.3
+pdfplumber==0.11.4
+
+# Excel Processing
+openpyxl==3.1.5
+
+# API Server
+fastapi==0.115.6
+uvicorn==0.34.0
+
+# AI Analysis
+openai==1.59.9
+
+# Database
+supabase==2.11.0
+
+# HTTP & Utils
+httpx==0.28.1
+python-dotenv==1.0.1
+aiofiles==24.1.0
+
+# WhatsApp (Evolution API)
+requests==2.32.3

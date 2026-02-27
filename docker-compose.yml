@@ -1,0 +1,11 @@
+services:
+  indflow-worker:
+    build: .
+    container_name: indflow-worker
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
+    restart: always
