@@ -224,27 +224,40 @@ class ConLicitacaoScraper:
             # Fechar modal de boas-vindas
             await self._close_welcome_modal()
 
-            # Navegar para lista de boletins via "Visualizar" no Dashboard
-            # O seletor anterior 'text="Visualizar"' era muito genérico e podia clicar no card errado.
+            # ESTRATÉGIA: Tentar navegação direta por URL primeiro para evitar cliques quebrados no dashboard
             try:
-                # Tentar encontrar o card específico de Boletins primeiro
-                boletins_card = self.page.locator('div.MuiPaper-root, .card').filter(has_text="Boletins de Licitações")
-                if await boletins_card.count() > 0:
-                    viz_link = boletins_card.locator('text="Visualizar"').first
-                else:
-                    viz_link = self.page.locator('text="Visualizar"').first
-
-                if await viz_link.is_visible(timeout=5000):
-                    await viz_link.click()
-                    await asyncio.sleep(3)
-                    await self.page.wait_for_load_state("networkidle", timeout=15000)
-                    logger.info(f"Navegou à lista de boletins: {self.page.url}")
+                # O URL do calendário/lista costuma ser este:
+                calendar_url = f"{config.CONLICITACAO_URL}/boletim_web/public/boletim"
+                logger.info(f"Tentando acesso direto ao calendário: {calendar_url}")
+                await self.page.goto(calendar_url, wait_until="networkidle", timeout=30000)
+                await asyncio.sleep(3)
             except Exception as e:
-                logger.warning(f"Erro ao clicar em Visualizar: {e}. Tentando seguir...")
+                logger.warning(f"Acesso direto falhou ({e}), tentando via cliques no Dashboard...")
+                # Back para o Dashboard para tentar o fluxo antigo se o direto falhar
+                await self.page.goto(config.CONLICITACAO_URL, wait_until="networkidle")
+
+                # Navegar para lista de boletins via "Visualizar" no Dashboard
+                # O seletor anterior 'text="Visualizar"' era muito genérico e podia clicar no card errado.
+                try:
+                    # Tentar encontrar o card específico de Boletins primeiro
+                    boletins_card = self.page.locator('div.MuiPaper-root, .card').filter(has_text="Boletins de Licitações")
+                    if await boletins_card.count() > 0:
+                        viz_link = boletins_card.locator('text="Visualizar"').first
+                    else:
+                        viz_link = self.page.locator('text="Visualizar"').first
+
+                    if await viz_link.is_visible(timeout=10000):
+                        await viz_link.click()
+                        await asyncio.sleep(3)
+                        await self.page.wait_for_load_state("networkidle", timeout=15000)
+                        logger.info(f"Navegou à lista de boletins via clique: {self.page.url}")
+                except Exception as ex:
+                    logger.warning(f"Erro ao clicar em Visualizar: {ex}. Tentando seguir...")
 
             await self._delay()
-
-            # Na página do calendário/lista, encontrar o boletim
+            
+            # Recomeçar a busca de links no calendário
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
             await asyncio.sleep(2) 
             
             # Tentar vários níveis de seletor para os blocos do calendário
