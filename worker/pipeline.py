@@ -224,11 +224,13 @@ async def process_boletim(
             else:
                 logger.info("[INFO] Nenhuma licitao relevante para reportar")
 
-            # 8b. Enviar PDFs dos editais de Alta aderência
+            # 8b. Enviar PDFs dos editais de Alta e Média aderência (se baixados)
             pdfs_enviados = 0
             for lic in licitacoes:
                 raw_path = lic.get("edital_pdf_path")
-                if not raw_path or lic.get("aderencia") != "ALTA":
+                # Se tem path, é porque foi baixado (inicialmente era ALTA ou interessante o suficiente)
+                # Enviamos se ainda for ALTA ou MEDIA após análise profunda
+                if not raw_path or lic.get("aderencia") not in ["ALTA", "MEDIA"]:
                     continue
 
                 edital_label = lic.get('edital') or lic.get('numero_conlicitacao', 'S/N')

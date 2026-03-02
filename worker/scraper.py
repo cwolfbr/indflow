@@ -404,10 +404,13 @@ class ConLicitacaoScraper:
             # 4. Localizar botão de download (múltiplos seletores)
             download_selectors = [
                 'button:has-text("Baixar Edital")', 'a:has-text("Baixar Edital")',
+                'button:has-text("Visualizar Edital")', 'a:has-text("Visualizar Edital")',
                 'button:has-text("Baixar edital")', 'a:has-text("Baixar edital")',
                 'button:has-text("Download")', 'a:has-text("Download")',
+                'button:has-text("Arquivos")', 'a:has-text("Arquivos")',
                 '[title*="Baixar"]', '[aria-label*="Baixar"]',
-                '.btn-download', '[class*="download"]'
+                '[title*="Edital"]', '[aria-label*="Edital"]',
+                '.btn-download', '[class*="download"]', 'a[href*="edital"]', 'a[href*="download"]'
             ]
             
             btn = None
@@ -421,23 +424,41 @@ class ConLicitacaoScraper:
             if not btn:
                 logger.info(f"Botão não visível para {numero_conlicitacao}, tentando expandir card...")
                 expand_selectors = [
-                    'text="Ver mais"', 'text="Detalhes"', 'button:has-text(" informações")',
-                    '[class*="expand"]', '[class*="details"]', '[aria-label*="expandir"]'
+                    'text="Ver mais"', 'text="Detalhes"', 'text="informações"',
+                    'button:has-text("Exibir")', 'button:has-text("Mais")',
+                    '[class*="expand"]', '[class*="details"]', '[aria-label*="expandir"]', 
+                    '[class*="MuiAccordionSummary"]', '[class*="MuiButton-root"]:has-text("mais")'
                 ]
                 for ex_sel in expand_selectors:
                     ex_btn = card.locator(ex_sel).first
                     if await ex_btn.is_visible(timeout=800):
                         await ex_btn.click(force=True)
                         logger.info(f"Expansão via: {ex_sel}")
-                        await asyncio.sleep(6) # Tempo para o SPA renderizar
+                        await asyncio.sleep(7) # Tempo maior para SPA
                         break
                 
-                # Checar novamente após expansão
-                for sel in download_selectors:
+                # Checar novamente após expansão com seletores de texto mais genéricos
+                for sel in download_selectors + ['text="Baixar"', 'text="Edital"']:
                     el = card.locator(sel).first
                     if await el.is_visible(timeout=1500):
                         btn = el
                         break
+
+            # Fallback 2: Tentar encontrar via JS se os seletores Playwright falharem
+            if not btn:
+                logger.info(f"Tentando localização via JS para {numero_conlicitacao}...")
+                btn_handle = await card.evaluate_handle("""
+                    card => {
+                        const links = Array.from(card.querySelectorAll('a, button, [role="button"]'));
+                        return links.find(el => {
+                            const txt = (el.innerText || el.title || el.ariaLabel || "").toLowerCase();
+                            return txt.includes('baixar') || txt.includes('edital') || txt.includes('download') || txt.includes('visualizar');
+                        });
+                    }
+                """)
+                if btn_handle.as_element():
+                    btn = btn_handle.as_element()
+                    logger.info("Botão localizado via JS fallback!")
 
             if not btn:
                 logger.warning(f"Não foi possível localizar o botão de download para {numero_conlicitacao}")
