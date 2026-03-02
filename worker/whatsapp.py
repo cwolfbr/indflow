@@ -126,7 +126,7 @@ def _format_licitacao_detail(index: int, lic: dict) -> str:
 def _format_licitacao_brief(index: int, lic: dict) -> str:
     """Formata uma licitação resumida (para Média aderência)."""
     num_con = lic.get("numero_conlicitacao", "S/N")
-    objeto = (lic.get("objeto") or "Sem descrição")[:100]
+    objeto = lic.get("objeto") or "Sem descrição"
     return f"\n{index}. Nº Conlicitação: {num_con}\n   📦 {objeto}"
 
 
