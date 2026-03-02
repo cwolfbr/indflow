@@ -57,6 +57,10 @@ class ConLicitacaoScraper:
             accept_downloads=True,
         )
         self.page = await self.context.new_page()
+        
+        # Garantir que o diretório de downloads existe para prints de debug
+        os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+        
         logger.info("Browser iniciado com sucesso")
 
     async def close(self):
@@ -83,48 +87,70 @@ class ConLicitacaoScraper:
         try:
             logger.info("Iniciando login no ConLicitao...")
 
+            # Usar 'domcontentloaded' em vez de 'networkidle' para evitar timeouts por scripts de tracking
             await self.page.goto(
                 config.CONLICITACAO_URL,
-                wait_until="networkidle",
-                timeout=60000,
+                wait_until="domcontentloaded",
+                timeout=45000,
             )
-            # Esperar React renderizar o formulrio
-            await asyncio.sleep(3)
-            await self._delay()
-
-            # Preencher email
-            email_input = self.page.locator('input[type="email"]').first
-            await email_input.fill(config.CONLICITACAO_EMAIL)
-            await self._delay()
-
-            # Preencher senha
-            password_input = self.page.locator('input[type="password"]').first
-            await password_input.fill(config.CONLICITACAO_PASSWORD)
-            await self._delay()
-
-            # Clicar no boto "Acessar" (React button)
-            login_button = self.page.get_by_role("button", name="Acessar")
-            await login_button.first.click()
-
-            # Aguardar navegao ps-login
+            
+            # Esperar um pouco para o React assentar
             await asyncio.sleep(5)
-            # Aumentar timeout para 60s para lidar com SPA lenta
-            await self.page.wait_for_load_state("networkidle", timeout=60000)
             await self._delay()
 
-            # Verificar se login foi bem-sucedido
-            is_logged_in = await self._check_logged_in()
-            if is_logged_in:
-                logger.info("[OK] Login realizado com sucesso!")
-            else:
-                logger.error(" Falha no login  no foi possvel verificar sesso")
-            return is_logged_in
+            # Tirar print inicial do formulário vazio
+            await self.page.screenshot(path=os.path.join(config.DOWNLOADS_DIR, "login_1_start.png"))
 
-        except Exception as e:
-            logger.error(f" Erro durante login: {e}")
+            logger.info(f"Preenchendo credenciais para: {config.CONLICITACAO_EMAIL}")
+            
+            # Seletores corrigidos com base em inspeção: login e senha
+            # Email (name="login" ou id="login")
+            email_field = self.page.locator('input[name="login"], input#login, input[type="email"]').first
+            await email_field.fill(config.CONLICITACAO_EMAIL)
+            
+            # Senha (name="senha" ou id="senha")
+            pass_field = self.page.locator('input[name="senha"], input#senha, input[type="password"]').first
+            await pass_field.fill(config.CONLICITACAO_PASSWORD)
+            
+            await self.page.screenshot(path=os.path.join(config.DOWNLOADS_DIR, "login_2_filled.png"))
+            
+            # Botão Acessar (React button ou submit padrão)
+            logger.info("Clicando em Acessar...")
+            btn = self.page.locator('button:has-text("Acessar"), input[type="submit"], .btn-primary').first
+            await btn.click()
+            
+            # Aguardar transição (SPA)
+            await asyncio.sleep(5)
+            await self.page.screenshot(path=os.path.join(config.DOWNLOADS_DIR, "login_3_after_click.png"))
+
+            # Aguardar Dashboard ou erro
+            try:
+                # Seletor do Dashboard ou elemento pós-login
+                await self.page.wait_for_selector('text="Dashboard", text="Sair", .MuiAvatar-root, text="Visualizar"', timeout=25000)
+            except:
+                logger.warning("Aguardando Dashboard demorou mais que o esperado. Verificando estado final...")
+                await self.page.screenshot(path=os.path.join(config.DOWNLOADS_DIR, "login_4_wait_timeout.png"))
+
+            if await self._is_logged_in():
+                logger.info("[OK] Login realizado com sucesso!")
+                return True
+            
+            # Verificar se há mensagem de erro explícita na tela
+            error_box = self.page.locator('.alert-danger, .MuiAlert-message, text="inválido", text="Incorreto"').first
+            if await error_box.is_visible(timeout=2000):
+                txt = await error_box.inner_text()
+                logger.error(f"❌ Erro de login no portal: {txt}")
+            
             return False
 
-    async def _check_logged_in(self) -> bool:
+        except Exception as e:
+            logger.error(f"❌ Erro catastrófico durante login: {e}")
+            try:
+                await self.page.screenshot(path=os.path.join(config.DOWNLOADS_DIR, "login_exception.png"))
+            except: pass
+            return False
+
+    async def _is_logged_in(self) -> bool:
         """Verifica se o usurio est logado checando elementos da pgina."""
         try:
             # Indicadores reais do dashboard ConLicitao ps-login

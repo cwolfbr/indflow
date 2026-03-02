@@ -55,10 +55,33 @@ class HealthResponse(BaseModel):
 
 # ── App ───────────────────────────────────────────────────────
 
+def validate_config():
+    """Valida as variáveis de ambiente críticas no startup."""
+    missing = []
+    if not config.CONLICITACAO_EMAIL or "@" not in config.CONLICITACAO_EMAIL:
+        missing.append("CONLICITACAO_EMAIL (inválido ou ausente)")
+    if not config.CONLICITACAO_PASSWORD:
+        missing.append("CONLICITACAO_PASSWORD (ausente)")
+    if not config.OPENAI_API_KEY or not config.OPENAI_API_KEY.startswith("sk-"):
+        missing.append("OPENAI_API_KEY (inválido ou ausente)")
+    if not config.SUPABASE_URL:
+        missing.append("SUPABASE_URL (ausente)")
+    if not config.SUPABASE_KEY:
+        missing.append("SUPABASE_KEY (ausente)")
+    
+    if missing:
+        logger.error("❌ ERRO DE CONFIGURAÇÃO CRÍTICO:")
+        for m in missing:
+            logger.error(f"   - {m}")
+        logger.error("Verifique as variáveis de ambiente no Easypanel!")
+    else:
+        logger.info("✅ Configurações básicas validadas.")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup e shutdown do app."""
     logger.info("🚀 Servidor de Triagem de Licitações iniciando...")
+    validate_config()
     yield
     logger.info("👋 Servidor encerrando...")
 
