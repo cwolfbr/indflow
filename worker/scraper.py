@@ -251,24 +251,19 @@ class ConLicitacaoScraper:
             logger.info(f"Acessando calendário de boletins: {calendar_url}")
             
             await self.page.goto(calendar_url, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(5)
+            await asyncio.sleep(8) # Tempo para o FullCalendar renderizar os eventos
             
             # Aguardar o calendário FullCalendar carregar
             try:
-                await self.page.wait_for_selector('.fc-view-harness, .fc-daygrid-event', timeout=20000)
+                await self.page.wait_for_selector('.fc-view-harness, .fc-daygrid-event, a:has-text("Boletim")', timeout=15000)
             except:
-                logger.warning("Calendário demorou a carregar. Verificando se há links...")
+                logger.warning("Calendário não detectado via seletores padrão. Verificando links...")
 
-            # 3. Localizar links de boletins (FullCalendar links)
-            # Seletor preciso: a.fc-daygrid-event a
-            loc = self.page.locator('a.fc-daygrid-event a, a.text-white.text-center')
+            # 3. Localizar links de boletins (FullCalendar links ou links diretos)
+            # Seletores variados para garantir captura
+            loc = self.page.locator('a.fc-daygrid-event, a.fc-event, a:has-text("Boletim"), .fc-daygrid-event a')
             count = await loc.count()
             
-            if count == 0:
-                # Fallback se o calendário mudou de classe
-                loc = self.page.locator('a:has-text("Boletim")')
-                count = await loc.count()
-
             if count == 0:
                 debug_path = os.path.join(config.DOWNLOADS_DIR, "debug_no_bulletins.png")
                 await self.page.screenshot(path=debug_path)
@@ -276,29 +271,28 @@ class ConLicitacaoScraper:
                 return False
 
             texts = await loc.all_inner_texts()
-            # Limpar espaços e filtrar apenas os que contém 'Boletim'
             links_data = []
             for i in range(count):
                 txt = " ".join(texts[i].split())
                 if "Boletim" in txt:
-                    links_data.append({"index": i, "text": txt})
+                    links_data.append({"index": i, "text": txt, "locator": loc.nth(i)})
 
             if not links_data:
                 logger.error("Elementos encontrados mas nenhum contém o texto 'Boletim'")
                 return False
 
-            logger.info(f"Boletins detectados: {[l['text'] for l in links_data[:5]]}...")
+            logger.info(f"Boletins detectados: {[l['text'] for l in links_data[:10]]}")
 
             # 4. Escolher o boletim
-            target_idx = -1
+            target_item = None
             if boletim_number:
                 target_str = f"Boletim {boletim_number}"
                 for item in links_data:
                     if target_str.lower() in item["text"].lower():
-                        target_idx = item["index"]
+                        target_item = item
                         break
             
-            if target_idx == -1:
+            if not target_item:
                 # Pegar o de maior número (mais recente)
                 max_val = -1
                 for item in links_data:
@@ -307,31 +301,31 @@ class ConLicitacaoScraper:
                         num = int(match.group(1))
                         if num > max_val:
                             max_val = num
-                            target_idx = item["index"]
+                            target_item = item
                 
-                if target_idx == -1:
-                    target_idx = links_data[0]["index"] # Fallback para o primeiro da lista
+                if not target_item:
+                    target_item = links_data[0] # Fallback
 
             # 5. Clicar e aguardar
-            target_el = loc.nth(target_idx)
-            logger.info(f"Clicando no boletim: '{texts[target_idx]}'")
+            logger.info(f"Clicando no boletim: '{target_item['text']}'")
             
-            # Garantir que o número do boletim atual está salvo
-            match = re.search(r'Boletim\s+(\d+)', texts[target_idx])
+            # Atualizar número atual
+            match = re.search(r'Boletim\s+(\d+)', target_item['text'])
             if match:
                 self.current_boletim_number = int(match.group(1))
 
-            await target_el.click()
+            await target_item['locator'].click()
             await asyncio.sleep(5)
-            await self.page.wait_for_load_state("networkidle", timeout=30000)
+            # Usar domcontentloaded para evitar travar em scripts de rede/tracking
+            await self.page.wait_for_load_state("domcontentloaded", timeout=20000)
+            await asyncio.sleep(3)
             
             # Verificar se mudou para a página do boletim
             if "visualizar" in self.page.url.lower() or await self.page.locator('text="Gerar .xlsx"').count() > 0:
                 logger.info(f"[OK] Chegou à página do boletim {self.current_boletim_number}")
                 return True
             
-            logger.warning("Navegação concluída mas não detectou a página do boletim. Prosseguindo assim mesmo...")
-            return True
+            return True # Retorna True mesmo se não confirmar perfeitamente, o export_xlsx tentará lidar
 
         except Exception as e:
             logger.error(f"Erro ao navegar ao boletim: {e}", exc_info=True)
@@ -345,15 +339,16 @@ class ConLicitacaoScraper:
             logger.info("Iniciando exportação XLSX...")
             
             # 1. Aguardar botão aparecer
-            xlsx_btn_selector = 'button:has-text("Gerar .xlsx"), a:has-text("Gerar .xlsx"), .btn:has-text("Gerar .xlsx")'
+            xlsx_btn_selector = 'button:has-text("Gerar .xlsx"), a:has-text("Gerar .xlsx"), .btn:has-text("Gerar .xlsx"), text="Gerar .xlsx"'
             try:
+                # Tentar esperar o botão carregar
+                await self.page.wait_for_selector(xlsx_btn_selector, timeout=25000)
                 btn = self.page.locator(xlsx_btn_selector).first
-                await self.page.wait_for_selector(xlsx_btn_selector, timeout=20000)
             except:
-                logger.warning("Botão XLSX não visível. Tentando rolar e fechar modais...")
+                logger.warning("Botão XLSX não visível após espera. Tentando rolar e verificar estado...")
                 await self._close_welcome_modal()
-                await self.page.mouse.wheel(0, 2000)
-                await asyncio.sleep(2)
+                await self.page.mouse.wheel(0, 3000)
+                await asyncio.sleep(3)
                 btn = self.page.locator(xlsx_btn_selector).first
 
             # 2. Selecionar todos os itens se necessário (SPA rule)
