@@ -38,10 +38,11 @@ def format_report(
     media = [l for l in licitacoes if l.get("aderencia") == "MEDIA"]
     baixa_count = (total_no_boletim or 0) - len(licitacoes) if total_no_boletim else 0
 
-    # Estatísticas de documentos
-    com_doc    = sum(1 for l in licitacoes if l.get("edital_disponivel") is True)
-    sem_doc    = sum(1 for l in licitacoes if l.get("edital_disponivel") is False)
-    sem_info   = len(licitacoes) - com_doc - sem_doc  # IA triage-only, sem tentativa de download
+    # Estatísticas de documentos (apenas para ALTA)
+    alta = [l for l in licitacoes if l.get("aderencia") == "ALTA"]
+    com_doc    = sum(1 for l in alta if l.get("edital_disponivel") is True)
+    sem_doc    = sum(1 for l in alta if l.get("edital_disponivel") is False)
+    sem_info   = len(alta) - com_doc - sem_doc  # IA triage-only, sem tentativa de download
 
     sections = []
 
@@ -124,10 +125,9 @@ def _format_licitacao_detail(index: int, lic: dict) -> str:
 
 def _format_licitacao_brief(index: int, lic: dict) -> str:
     """Formata uma licitação resumida (para Média aderência)."""
-    edital = lic.get("edital", "S/N")
-    orgao = lic.get("orgao", "")
-    objeto = lic.get("objeto", "")[:100]
-    return f"\n{index}. {edital} — {orgao}\n   📦 {objeto}"
+    num_con = lic.get("numero_conlicitacao", "S/N")
+    objeto = (lic.get("objeto") or "Sem descrição")[:100]
+    return f"\n{index}. Nº Conlicitação: {num_con}\n   📦 {objeto}"
 
 
 def send_whatsapp_message(message: str, recipient: str | None = None) -> bool:

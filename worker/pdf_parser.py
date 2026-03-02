@@ -169,7 +169,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
         result = "\n\n".join(full_text)
         
         # Limitar tamanho para não estourar token limit da LLM
-        max_chars = 50000  # ~12.5k tokens
+        max_chars = config.PDF_MAX_CHARS
         if len(result) > max_chars:
             result = result[:max_chars] + "\n\n[... TEXTO TRUNCADO ...]"
             logger.info(f"⚠️ PDF truncado: {len(result)} chars (limite: {max_chars})")

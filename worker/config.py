@@ -137,4 +137,5 @@ KEYWORDS_MEDIA = [
 SCRAPING_DELAY_MIN = 2    # Delay mínimo entre ações (segundos)
 SCRAPING_DELAY_MAX = 5    # Delay máximo entre ações (segundos)
 DOWNLOAD_TIMEOUT = 60     # Timeout para downloads (segundos)
-MAX_RETRIES = 3           # Tentativas em caso de falha
+# ── PDF Logic ───────────────────────────────────────────────
+PDF_MAX_CHARS = 200000    # Limite de caracteres para análise IA (evita estouro de tokens)
