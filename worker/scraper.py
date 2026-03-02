@@ -369,39 +369,102 @@ class ConLicitacaoScraper:
             return None
 
     async def download_edital(self, numero_conlicitacao: str, favorite: bool = False) -> str | None:
-        """Download de edital individual."""
+        """
+        Download de edital individual com estratégias robustas de expansão e detecção.
+        """
         try:
             logger.info(f"Baixando edital da licitação {numero_conlicitacao}...")
+            
+            # 1. Localizar o ID na página (com suporte a paginação)
             found = False
-            for _ in range(5): # Paginação limitada
+            for _ in range(5): 
                 if await self.page.get_by_text(numero_conlicitacao, exact=True).is_visible(timeout=3000):
-                    found = True; break
-                next_btn = self.page.locator('ul.pagination li:not(.disabled) a:has-text(">")').first
+                    found = True
+                    break
+                next_btn = self.page.locator('ul.pagination li:not(.disabled) a:has-text(">"), [aria-label*="xt"], button:has-text(">")').first
                 if await next_btn.is_visible(timeout=1000):
-                    await next_btn.click(); await asyncio.sleep(3)
+                    logger.info("ID não encontrado nesta página, avançando...")
+                    await next_btn.click()
+                    await asyncio.sleep(4)
                 else: break
             
-            if not found: return None
+            if not found:
+                logger.warning(f"ID {numero_conlicitacao} não localizado em nenhuma página.")
+                return None
 
-            card = self.page.get_by_text(numero_conlicitacao, exact=True).locator("xpath=./ancestor::div[contains(@class,'MuiPaper-root') or contains(@class,'card')][1]")
+            # 2. Isolar o card container
+            card = self.page.get_by_text(numero_conlicitacao, exact=True).locator("xpath=./ancestor::div[contains(@class,'MuiPaper-root') or contains(@class,'card') or contains(@class,'bidding')][1]")
             await card.scroll_into_view_if_needed()
-            if favorite: await self.mark_as_favorite_in_card(card, numero_conlicitacao)
+            await asyncio.sleep(1)
 
-            btn = card.locator('button:has-text("Baixar Edital"), a:has-text("Baixar Edital")').first
-            if not await btn.is_visible(timeout=2000):
-                await card.locator('text="Ver mais"').first.click(force=True)
-                await asyncio.sleep(5)
-                btn = card.locator('button:has-text("Baixar Edital"), a:has-text("Baixar Edital")').first
+            # 3. Favoritar se solicitado
+            if favorite: 
+                await self.mark_as_favorite_in_card(card, numero_conlicitacao)
 
-            async with self.page.expect_download(timeout=60000) as download_info:
+            # 4. Localizar botão de download (múltiplos seletores)
+            download_selectors = [
+                'button:has-text("Baixar Edital")', 'a:has-text("Baixar Edital")',
+                'button:has-text("Baixar edital")', 'a:has-text("Baixar edital")',
+                'button:has-text("Download")', 'a:has-text("Download")',
+                '[title*="Baixar"]', '[aria-label*="Baixar"]',
+                '.btn-download', '[class*="download"]'
+            ]
+            
+            btn = None
+            for sel in download_selectors:
+                el = card.locator(sel).first
+                if await el.is_visible(timeout=800):
+                    btn = el
+                    break
+
+            # 5. Se não visível, tentar expandir o card
+            if not btn:
+                logger.info(f"Botão não visível para {numero_conlicitacao}, tentando expandir card...")
+                expand_selectors = [
+                    'text="Ver mais"', 'text="Detalhes"', 'button:has-text(" informações")',
+                    '[class*="expand"]', '[class*="details"]', '[aria-label*="expandir"]'
+                ]
+                for ex_sel in expand_selectors:
+                    ex_btn = card.locator(ex_sel).first
+                    if await ex_btn.is_visible(timeout=800):
+                        await ex_btn.click(force=True)
+                        logger.info(f"Expansão via: {ex_sel}")
+                        await asyncio.sleep(6) # Tempo para o SPA renderizar
+                        break
+                
+                # Checar novamente após expansão
+                for sel in download_selectors:
+                    el = card.locator(sel).first
+                    if await el.is_visible(timeout=1500):
+                        btn = el
+                        break
+
+            if not btn:
+                logger.warning(f"Não foi possível localizar o botão de download para {numero_conlicitacao}")
+                # Print de debug para ver o estado do card
+                debug_path = os.path.join(config.DOWNLOADS_DIR, f"debug_dl_fail_{numero_conlicitacao}.png")
+                await card.screenshot(path=debug_path)
+                return None
+
+            # 6. Executar download
+            await btn.scroll_into_view_if_needed()
+            await asyncio.sleep(1)
+            
+            download_dir = os.path.join(config.ZIP_DIR, f"edital_{numero_conlicitacao}")
+            os.makedirs(download_dir, exist_ok=True)
+
+            logger.info(f"Iniciando captura de download para {numero_conlicitacao}...")
+            async with self.page.expect_download(timeout=90000) as download_info:
                 await btn.click(force=True)
                 download = await download_info.value
-                filepath = os.path.join(config.ZIP_DIR, f"edital_{numero_conlicitacao}", download.suggested_filename)
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                filepath = os.path.join(download_dir, download.suggested_filename)
                 await download.save_as(filepath)
+                logger.info(f"[OK] Download concluído: {filepath}")
                 return filepath
+
         except Exception as e:
-            logger.error(f"Erro download_edital {numero_conlicitacao}: {e}"); return None
+            logger.error(f"Falha em download_edital {numero_conlicitacao}: {e}")
+            return None
 
     async def mark_as_favorite(self, numero_conlicitacao: str) -> bool:
         """Favoritar licitação."""
