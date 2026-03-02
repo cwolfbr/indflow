@@ -246,21 +246,18 @@ class ConLicitacaoScraper:
             await self._close_welcome_modal()
 
             # 2. Ir diretamente para a página de boletins (Calendário)
-            # Nota: O subagent confirmou que o URL correto do calendário é .../boletins
             calendar_url = f"{config.CONLICITACAO_URL}/boletim_web/public/boletins"
             logger.info(f"Acessando calendário de boletins: {calendar_url}")
             
             await self.page.goto(calendar_url, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.sleep(8) # Tempo para o FullCalendar renderizar os eventos
+            await asyncio.sleep(8) 
             
-            # Aguardar o calendário FullCalendar carregar
             try:
                 await self.page.wait_for_selector('.fc-view-harness, .fc-daygrid-event, a:has-text("Boletim")', timeout=15000)
             except:
                 logger.warning("Calendário não detectado via seletores padrão. Verificando links...")
 
-            # 3. Localizar links de boletins (FullCalendar links ou links diretos)
-            # Seletores variados para garantir captura
+            # 3. Localizar links de boletins
             loc = self.page.locator('a.fc-daygrid-event, a.fc-event, a:has-text("Boletim"), .fc-daygrid-event a')
             count = await loc.count()
             
@@ -281,8 +278,6 @@ class ConLicitacaoScraper:
                 logger.error("Elementos encontrados mas nenhum contém o texto 'Boletim'")
                 return False
 
-            logger.info(f"Boletins detectados: {[l['text'] for l in links_data[:10]]}")
-
             # 4. Escolher o boletim
             target_item = None
             if boletim_number:
@@ -293,7 +288,6 @@ class ConLicitacaoScraper:
                         break
             
             if not target_item:
-                # Pegar o de maior número (mais recente)
                 max_val = -1
                 for item in links_data:
                     match = re.search(r'Boletim\s+(\d+)', item["text"])
@@ -302,67 +296,65 @@ class ConLicitacaoScraper:
                         if num > max_val:
                             max_val = num
                             target_item = item
-                
-                if not target_item:
-                    target_item = links_data[0] # Fallback
+                if not target_item: target_item = links_data[0]
 
-            # 5. Clicar e aguardar
+            # 5. Clicar
             logger.info(f"Clicando no boletim: '{target_item['text']}'")
-            
-            # Atualizar número atual
             match = re.search(r'Boletim\s+(\d+)', target_item['text'])
-            if match:
-                self.current_boletim_number = int(match.group(1))
+            if match: self.current_boletim_number = int(match.group(1))
 
             await target_item['locator'].click()
             await asyncio.sleep(5)
-            # Usar domcontentloaded para evitar travar em scripts de rede/tracking
             await self.page.wait_for_load_state("domcontentloaded", timeout=20000)
-            await asyncio.sleep(3)
-            
-            # Verificar se mudou para a página do boletim
-            if "visualizar" in self.page.url.lower() or await self.page.locator('text="Gerar .xlsx"').count() > 0:
-                logger.info(f"[OK] Chegou à página do boletim {self.current_boletim_number}")
-                return True
-            
-            return True # Retorna True mesmo se não confirmar perfeitamente, o export_xlsx tentará lidar
+            await asyncio.sleep(2)
+            return True
 
         except Exception as e:
             logger.error(f"Erro ao navegar ao boletim: {e}", exc_info=True)
             return False
 
-    async def export_xlsx(self) -> str | None:
+    async def navigate_to_boletim_url(self, url: str) -> bool:
         """
-        Exporta o XLSX do boletim atual.
+        Navega diretamente a uma URL de boletim (ex: vinda do e-mail).
         """
         try:
+            logger.info(f"Navegando à URL do boletim: {url}")
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(5)
+
+            if "login" in self.page.url.lower():
+                logger.info("Redirecionado para login, autenticando...")
+                if not await self.login(): return False
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(5)
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao navegar à URL do boletim: {e}")
+            return False
+
+    async def export_xlsx(self, boletim_number=None, boletim_url=None) -> str | None:
+        """
+        Exporta o XLSX do boletim atual. Signature compatível com pipeline.py.
+        """
+        try:
+            if boletim_url:
+                await self.navigate_to_boletim_url(boletim_url)
+            elif boletim_number and self.current_boletim_number != boletim_number:
+                await self.navigate_to_boletim(boletim_number)
+
             logger.info("Iniciando exportação XLSX...")
-            
-            # 1. Aguardar botão aparecer
             xlsx_btn_selector = 'button:has-text("Gerar .xlsx"), a:has-text("Gerar .xlsx"), .btn:has-text("Gerar .xlsx"), text="Gerar .xlsx"'
+            
             try:
-                # Tentar esperar o botão carregar
-                await self.page.wait_for_selector(xlsx_btn_selector, timeout=25000)
+                await self.page.wait_for_selector(xlsx_btn_selector, timeout=20000)
                 btn = self.page.locator(xlsx_btn_selector).first
             except:
-                logger.warning("Botão XLSX não visível após espera. Tentando rolar e verificar estado...")
+                logger.warning("Botão XLSX não visível. Rolando...")
                 await self._close_welcome_modal()
                 await self.page.mouse.wheel(0, 3000)
                 await asyncio.sleep(3)
                 btn = self.page.locator(xlsx_btn_selector).first
 
-            # 2. Selecionar todos os itens se necessário (SPA rule)
-            try:
-                # Alguns portais exigem marcar um checkbox de "Selecionar todos" antes de exportar
-                select_all = self.page.locator('input[type="checkbox"], .select-all').first
-                if await select_all.is_visible(timeout=2000):
-                    await select_all.click()
-                    await asyncio.sleep(1)
-            except: pass
-
-            # 3. Clicar e baixar
-            logger.info("Clicando no botão 'Gerar .xlsx'...")
-            
             async with self.page.expect_download(timeout=90000) as download_info:
                 await btn.click(force=True)
                 
@@ -370,327 +362,77 @@ class ConLicitacaoScraper:
             filename = f"boletim_{self.current_boletim_number or 'export'}.xlsx"
             filepath = os.path.join(config.XLSX_DIR, filename)
             await download.save_as(filepath)
-            
             logger.info(f"[OK] XLSX salvo em: {filepath}")
             return filepath
-
         except Exception as e:
             logger.error(f"Falha na exportação XLSX: {e}")
             return None
 
     async def download_edital(self, numero_conlicitacao: str, favorite: bool = False) -> str | None:
-        """
-        Faz download do edital de uma licitação específica dentro da página do boletim.
-        Estratégia robusta com múltiplos selectors de expansão e fallback via JS.
-        
-        Args:
-            numero_conlicitacao: ID da licitação no ConLicitação (ex: 18621681).
-        Returns: Caminho do arquivo baixado, ou None se falhar.
-        """
+        """Download de edital individual."""
         try:
             logger.info(f"Baixando edital da licitação {numero_conlicitacao}...")
-
-            # 1. Localizar o ID na página (com suporte a paginação)
             found = False
-            for page_idx in range(8):  # Limite de 8 páginas
-                id_text_locator = self.page.get_by_text(numero_conlicitacao, exact=True).first
-                if await id_text_locator.is_visible(timeout=3000):
-                    found = True
-                    break
+            for _ in range(5): # Paginação limitada
+                if await self.page.get_by_text(numero_conlicitacao, exact=True).is_visible(timeout=3000):
+                    found = True; break
+                next_btn = self.page.locator('ul.pagination li:not(.disabled) a:has-text(">")').first
+                if await next_btn.is_visible(timeout=1000):
+                    await next_btn.click(); await asyncio.sleep(3)
+                else: break
+            
+            if not found: return None
 
-                # Tentar próxima página via vários selectors de paginação
-                next_selectors = [
-                    'ul.pagination li:not(.disabled) a[aria-label*="xt"]',   # Next
-                    'ul.pagination li:not(.disabled) a:has-text(">")',
-                    'ul.pagination li:not(.disabled) a:has-text("»")',
-                    'ul.pagination li:not(.disabled) a:has-text("Próxima")',
-                    'ul.pagination li:not(.disabled) a:has-text("Proxima")',
-                    'button[aria-label*="next" i]:not([disabled])',
-                    'button[aria-label*="próxima" i]:not([disabled])',
-                ]
-                clicked_next = False
-                for sel in next_selectors:
-                    next_btn = self.page.locator(sel).first
-                    try:
-                        if await next_btn.is_visible(timeout=1000):
-                            logger.info(f"ID {numero_conlicitacao} não na pág {page_idx+1}, avançando...")
-                            await next_btn.click()
-                            await asyncio.sleep(3)
-                            await self.page.wait_for_load_state("networkidle", timeout=10000)
-                            clicked_next = True
-                            break
-                    except Exception:
-                        continue
-                if not clicked_next:
-                    break
-
-            if not found:
-                logger.warning(f"ID {numero_conlicitacao} não encontrado em nenhuma página.")
-                return None
-
-            id_text_locator = self.page.get_by_text(numero_conlicitacao, exact=True).first
-
-            # 2. Isolar o card container
-            card = id_text_locator.locator(
-                "xpath=./ancestor::div[contains(@class,'MuiPaper-root') "
-                "or contains(@class,'card') "
-                "or contains(@class,'bidding') "
-                "or contains(@class,'licitacao')][1]"
-            )
-
-            if not await card.is_visible(timeout=3000):
-                logger.warning(f"Card container não isolado para {numero_conlicitacao}")
-                return None
-
+            card = self.page.get_by_text(numero_conlicitacao, exact=True).locator("xpath=./ancestor::div[contains(@class,'MuiPaper-root') or contains(@class,'card')][1]")
             await card.scroll_into_view_if_needed()
-            await self._close_welcome_modal()
+            if favorite: await self.mark_as_favorite_in_card(card, numero_conlicitacao)
 
-            # 3. Favoritar se solicitado
-            if favorite:
-                await self.mark_as_favorite_in_card(card, numero_conlicitacao)
-
-            # 4. Verificar disponibilidade
-            if await card.locator('text="Nenhum edital disponível"').is_visible(timeout=1000):
-                logger.warning(f"Licitação {numero_conlicitacao} sem edital.")
-                return None
-
-            download_btn_selector = (
-                'button:has-text("Baixar Edital"), a:has-text("Baixar Edital"), '
-                'button:has-text("Baixar edital"), a:has-text("Baixar edital"), '
-                '[class*="download"]:has-text("Edital"), '
-                'a[href*="edital" i], a[href*="download" i]'
-            )
-            btn = card.locator(download_btn_selector).first
-
-            # 4. Expandir — múltiplas estratégias
+            btn = card.locator('button:has-text("Baixar Edital"), a:has-text("Baixar Edital")').first
             if not await btn.is_visible(timeout=2000):
-                logger.info(f"Expandindo card {numero_conlicitacao}...")
+                await card.locator('text="Ver mais"').first.click(force=True)
+                await asyncio.sleep(5)
+                btn = card.locator('button:has-text("Baixar Edital"), a:has-text("Baixar Edital")').first
 
-                expand_selectors = [
-                    'text="Ver mais informações da licitação"',
-                    'text="Ver mais informacoes da licitacao"',
-                    'a:has-text("Ver mais")',
-                    'button:has-text("Ver mais")',
-                    'span:has-text("Ver mais")',
-                    '[class*="expand"]',
-                    '[class*="details"]',
-                    '[class*="toggle"]',
-                    'a:has-text("Detalhes")',
-                    'button:has-text("Detalhes")',
-                ]
-
-                expanded = False
-                for exp_sel in expand_selectors:
-                    try:
-                        exp_el = card.locator(exp_sel).first
-                        if await exp_el.is_visible(timeout=800):
-                            await exp_el.click(force=True)
-                            logger.info(f"  Expansão via: {exp_sel}")
-                            expanded = True
-                            break
-                    except Exception:
-                        continue
-
-                if not expanded:
-                    # Fallback 1: clicar no título/objeto do card
-                    box = await card.bounding_box()
-                    if box:
-                        await self.page.mouse.click(box['x'] + box['width'] / 2, box['y'] + 30)
-                        logger.info(f"  Expansão via clique no centro do card")
-
-                # Aguardar a expansão (animação do SPA)
-                await asyncio.sleep(7)
-                await self.page.wait_for_load_state("networkidle", timeout=10000)
-
-                # Checar botão novamente
-                btn = card.locator(download_btn_selector).first
-
-                if not await btn.is_visible(timeout=3000):
-                    # Fallback 2: scroll dentro do card e checar
-                    await card.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
-                    await asyncio.sleep(2)
-                    btn = card.locator(download_btn_selector).first
-
-                if not await btn.is_visible(timeout=3000):
-                    # Fallback 3: clicar via JS no primeiro link de download encontrado
-                    logger.info(f"  Tentando clique via JavaScript em {numero_conlicitacao}...")
-                    clicked = await card.evaluate("""
-                        el => {
-                            const links = el.querySelectorAll('a[href], button');
-                            for (const link of links) {
-                                const text = link.textContent || '';
-                                if (/baixar|edital|download/i.test(text)) {
-                                    link.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    """)
-                    if clicked:
-                        await asyncio.sleep(3)
-                        btn = card.locator(download_btn_selector).first
-
-            if not await btn.is_visible(timeout=3000):
-                logger.warning(f"Botão de download não localizado para {numero_conlicitacao} após todas as tentativas")
-                return None
-
-            await btn.scroll_into_view_if_needed()
-            await asyncio.sleep(1)
-
-            download_dir = os.path.join(config.ZIP_DIR, f"edital_{numero_conlicitacao}")
-            os.makedirs(download_dir, exist_ok=True)
-
-            logger.info(f"Clicando em Baixar Edital para {numero_conlicitacao}...")
             async with self.page.expect_download(timeout=60000) as download_info:
                 await btn.click(force=True)
                 download = await download_info.value
-                filepath = os.path.join(download_dir, download.suggested_filename)
+                filepath = os.path.join(config.ZIP_DIR, f"edital_{numero_conlicitacao}", download.suggested_filename)
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 await download.save_as(filepath)
-                logger.info(f"[OK] Sucesso: {filepath}")
                 return filepath
-
         except Exception as e:
-            logger.error(f"[ERR] Erro em download_edital({numero_conlicitacao}): {e}")
-            return None
+            logger.error(f"Erro download_edital {numero_conlicitacao}: {e}"); return None
 
     async def mark_as_favorite(self, numero_conlicitacao: str) -> bool:
-        """
-        Marca uma licitação como favorita (estrela) no portal.
-        
-        Args:
-            numero_conlicitacao: ID da licitação.
-        Returns: True se clicou com sucesso, False caso contrário.
-        """
+        """Favoritar licitação."""
         try:
-            logger.info(f"Favoritando licitação {numero_conlicitacao}...")
-            
-            # 1. Localizar o ID na página
-            id_text_locator = self.page.get_by_text(numero_conlicitacao, exact=True).first
-            if not await id_text_locator.is_visible(timeout=3000):
-                logger.warning(f"ID {numero_conlicitacao} não visível para favoritar")
-                return False
-
-            # 2. Isolar o card
-            card = id_text_locator.locator(
-                "xpath=./ancestor::div[contains(@class,'MuiPaper-root') "
-                "or contains(@class,'card') "
-                "or contains(@class,'bidding') "
-                "or contains(@class,'licitacao')][1]"
-            )
-
+            card = self.page.get_by_text(numero_conlicitacao, exact=True).locator("xpath=./ancestor::div[contains(@class,'MuiPaper-root') or contains(@class,'card')][1]")
             return await self.mark_as_favorite_in_card(card, numero_conlicitacao)
-
-        except Exception as e:
-            logger.error(f" [ERR] Erro ao favoritar {numero_conlicitacao}: {e}")
-            return False
+        except: return False
 
     async def mark_as_favorite_in_card(self, card, numero_conlicitacao: str) -> bool:
-        """Marca como favorito dentro de um card já localizado."""
+        """Marca favorito no card."""
         try:
-            # Seletores possíveis para o botão de favorito (estrela)
-            # 1. Por título/tooltip do portal (MUI ou standard alt/title)
-            # 2. Por classe de ícone (FontAwesome ou MUI Icons)
-            # 3. Por ícone SVG (path que lembra uma estrela)
-            fav_selectors = [
-                'a[title*="Gerenciar Licitações"]',
-                'button[title*="Gerenciar Licitações"]',
-                '[aria-label*="Gerenciar Licitações"]',
-                '.fa-star',
-                '.fa-star-o',
-                'svg path[d*="M12 17.27"]', # Típico path de estrela do MUI
-                '[class*="star"]',
-            ]
-            
-            fav_btn = None
-            for sel in fav_selectors:
-                el = card.locator(sel).first
-                if await el.is_visible(timeout=500):
-                    fav_btn = el
-                    logger.info(f"   Botão favorito encontrado via: {sel}")
-                    break
-            
-            if fav_btn:
+            fav_btn = card.locator('button[title*="Gerenciar"], .fa-star, [class*="star"]').first
+            if await fav_btn.is_visible(timeout=1000):
                 await fav_btn.click(force=True)
-                logger.info(f" [OK] Licitação {numero_conlicitacao} marcada como favorita.")
-                await asyncio.sleep(1)
+                logger.info(f"Favoritada: {numero_conlicitacao}")
                 return True
-            else:
-                logger.warning(f" Botão de favorito não encontrado para {numero_conlicitacao}")
-                return False
-        except Exception as e:
-            logger.error(f" [ERR] Erro ao favoritar no card {numero_conlicitacao}: {e}")
             return False
+        except: return False
 
     async def download_editais_batch(self, ids: list[str], favorite: bool = False) -> list[dict]:
-        """
-        Baixa editais em lote com delays humanizados.
-        
-        Args:
-            ids: Lista de IDs (numero_conlicitacao) das licitaes para download
-            favorite: Se True, marca como favorito no processo.
-        Returns: Lista de dicts com {id, filepath, success}
-        """
+        """Download em lote."""
         results = []
-        for lic_id in ids:
-            filepath = await self.download_edital(lic_id, favorite=favorite)
-            results.append({
-                "id": lic_id,
-                "filepath": filepath,
-                "success": filepath is not None,
-            })
-            await self._delay()  # Delay entre downloads
-
-        success_count = sum(1 for r in results if r["success"])
-        logger.info(f" Downloads concludos: {success_count}/{len(ids)} com sucesso")
+        for lid in ids:
+            path = await self.download_edital(lid, favorite); results.append({"id": lid, "filepath": path, "success": path is not None})
+            await self._delay()
         return results
 
     async def get_boletim_url_from_email(self, email_html: str) -> str | None:
-        """
-        Extrai a URL do boletim a partir do HTML do e-mail.
-        
-        Args:
-            email_html: Contedo HTML do e-mail
-        Returns: URL do boletim, ou None se no encontrada.
-        """
-        # Procurar link do boto "Acessar o Boletim"
-        patterns = [
-            r'href="([^"]*(?:boletim|bulletin)[^"]*)"',
-            r'href="(https?://[^"]*conlicitacao[^"]*)"',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, email_html, re.IGNORECASE)
-            if match:
-                return match.group(1)
-        return None
-
-    async def navigate_to_boletim_url(self, url: str) -> bool:
-        """
-        Navega diretamente a uma URL de boletim extrada do e-mail.
-        
-        Args:
-            url: URL completa do boletim
-        Returns: True se navegao foi bem-sucedida.
-        """
-        try:
-            logger.info(f"Navegando  URL do boletim: {url}")
-            await self.page.goto(url, wait_until="networkidle", timeout=30000)
-            await self._delay()
-
-            # Pode redirecionar para login  tratar
-            if "login" in self.page.url.lower():
-                logger.info("Redirecionado para login, fazendo login primeiro...")
-                if not await self.login():
-                    return False
-                # Aps login, navegar novamente  URL
-                await self.page.goto(url, wait_until="networkidle", timeout=30000)
-                await self._delay()
-
-            return True
-
-        except Exception as e:
-            logger.error(f" Erro ao navegar  URL do boletim: {e}")
-            return False
+        """Extrai URL do boletim do HTML."""
+        match = re.search(r'href="([^"]*(?:boletim|visualizar)[^"]*)"', email_html, re.I)
+        return match.group(1) if match else None
 
     async def scrape_bulletin_cards(self) -> tuple[list[dict], int | None]:
         """
@@ -917,7 +659,7 @@ async def run_scraping_flow(
                 return {"success": False, "error": "Falha ao navegar ao boletim"}
 
         # Tentar XLSX
-        xlsx_path = await scraper.export_xlsx()
+        xlsx_path = await scraper.export_xlsx(boletim_number, boletim_url)
         licitacoes = []
         if xlsx_path:
             from .pdf_parser import parse_xlsx
