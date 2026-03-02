@@ -237,158 +237,138 @@ class ConLicitacaoScraper:
 
     async def navigate_to_boletim(self, boletim_number: int | None = None) -> bool:
         """
-        Navega at um boletim especfico ou o mais recente.
-        Fluxo do SPA: Dashboard  Visualizar boletins  Calendrio  Clique no boletim.
-        
-        Args:
-            boletim_number: Nmero do boletim (ex: 1, 2, 3). Se None, vai ao mais recente.
-        Returns: True se navegao foi bem-sucedida.
+        Navega até um boletim específico no calendário FullCalendar.
         """
         try:
             logger.info(f"Navegando ao boletim {boletim_number or 'mais recente'}...")
 
-            # Fechar modal de boas-vindas
+            # 1. Fechar modals iniciais
             await self._close_welcome_modal()
 
-            # ESTRATÉGIA: Tentar navegação direta por URL primeiro para evitar cliques quebrados no dashboard
+            # 2. Ir diretamente para a página de boletins (Calendário)
+            # Nota: O subagent confirmou que o URL correto do calendário é .../boletins
+            calendar_url = f"{config.CONLICITACAO_URL}/boletim_web/public/boletins"
+            logger.info(f"Acessando calendário de boletins: {calendar_url}")
+            
+            await self.page.goto(calendar_url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(5)
+            
+            # Aguardar o calendário FullCalendar carregar
             try:
-                # O URL do calendário/lista costuma ser este:
-                calendar_url = f"{config.CONLICITACAO_URL}/boletim_web/public/boletim"
-                logger.info(f"Tentando acesso direto ao calendário: {calendar_url}")
-                await self.page.goto(calendar_url, wait_until="networkidle", timeout=30000)
-                await asyncio.sleep(3)
-            except Exception as e:
-                logger.warning(f"Acesso direto falhou ({e}), tentando via cliques no Dashboard...")
-                # Back para o Dashboard para tentar o fluxo antigo se o direto falhar
-                await self.page.goto(config.CONLICITACAO_URL, wait_until="networkidle")
+                await self.page.wait_for_selector('.fc-view-harness, .fc-daygrid-event', timeout=20000)
+            except:
+                logger.warning("Calendário demorou a carregar. Verificando se há links...")
 
-                # Navegar para lista de boletins via "Visualizar" no Dashboard
-                # O seletor anterior 'text="Visualizar"' era muito genérico e podia clicar no card errado.
-                try:
-                    # Tentar encontrar o card específico de Boletins primeiro
-                    boletins_card = self.page.locator('div.MuiPaper-root, .card').filter(has_text="Boletins de Licitações")
-                    if await boletins_card.count() > 0:
-                        viz_link = boletins_card.locator('text="Visualizar"').first
-                    else:
-                        viz_link = self.page.locator('text="Visualizar"').first
+            # 3. Localizar links de boletins (FullCalendar links)
+            # Seletor preciso: a.fc-daygrid-event a
+            loc = self.page.locator('a.fc-daygrid-event a, a.text-white.text-center')
+            count = await loc.count()
+            
+            if count == 0:
+                # Fallback se o calendário mudou de classe
+                loc = self.page.locator('a:has-text("Boletim")')
+                count = await loc.count()
 
-                    if await viz_link.is_visible(timeout=10000):
-                        await viz_link.click()
-                        await asyncio.sleep(3)
-                        await self.page.wait_for_load_state("networkidle", timeout=15000)
-                        logger.info(f"Navegou à lista de boletins via clique: {self.page.url}")
-                except Exception as ex:
-                    logger.warning(f"Erro ao clicar em Visualizar: {ex}. Tentando seguir...")
-
-            await self._delay()
-            
-            # Recomeçar a busca de links no calendário
-            await self.page.wait_for_load_state("networkidle", timeout=15000)
-            await asyncio.sleep(2) 
-            
-            # Tentar vários níveis de seletor para os blocos do calendário
-            selectors = [
-                'div[role="button"]:has-text("Boletim")',
-                'span:has-text("Boletim")',
-                'a:has-text("Boletim")',
-                'div:has-text("Boletim")',
-                '.boletim-link',
-                'text="Boletim"'
-            ]
-            
-            links_locator = None
-            for sel in selectors:
-                loc = self.page.locator(sel)
-                cnt = await loc.count()
-                if cnt > 0:
-                    # Verificar se algum deles realmente tem o texto esperado
-                    links_locator = loc
-                    logger.info(f" Links encontrados ({cnt}) via selector: {sel}")
-                    break
-            
-            if not links_locator:
-                debug_path = os.path.join(config.DOWNLOADS_DIR, "debug_boletins_error.png")
+            if count == 0:
+                debug_path = os.path.join(config.DOWNLOADS_DIR, "debug_no_bulletins.png")
                 await self.page.screenshot(path=debug_path)
-                logger.warning(f"Nenhum link de boletim encontrado. Screenshot de erro: {debug_path}")
+                logger.error(f"Nenhum boletim encontrado no calendário. Screenshot: {debug_path}")
                 return False
 
-            texts = await links_locator.all_inner_texts()
-            # Limpar textos pra remover quebras de linha/espaços excessivos do calendário
-            texts = [" ".join(t.split()) for t in texts]
-            
-            hrefs = []
-            links_count = await links_locator.count()
-            for i in range(links_count):
-                h = await links_locator.nth(i).get_attribute("href")
-                hrefs.append(h or "")
+            texts = await loc.all_inner_texts()
+            # Limpar espaços e filtrar apenas os que contém 'Boletim'
+            links_data = []
+            for i in range(count):
+                txt = " ".join(texts[i].split())
+                if "Boletim" in txt:
+                    links_data.append({"index": i, "text": txt})
 
-            logger.info(f"Lista de boletins detectada: {[t for t in texts if 'Boletim' in t][:10]}...")
-            
-            latest_link_idx = -1
+            if not links_data:
+                logger.error("Elementos encontrados mas nenhum contém o texto 'Boletim'")
+                return False
+
+            logger.info(f"Boletins detectados: {[l['text'] for l in links_data[:5]]}...")
+
+            # 4. Escolher o boletim
+            target_idx = -1
             if boletim_number:
-                target_id = str(boletim_number)
-                target_text = f"Boletim {target_id}"
-                found = False
-                for i, (t, h) in enumerate(zip(texts, hrefs)):
-                    if target_text.lower() in t.lower() or h.endswith(f"/{target_id}"):
-                        latest_link_idx = i
-                        found = True
+                target_str = f"Boletim {boletim_number}"
+                for item in links_data:
+                    if target_str.lower() in item["text"].lower():
+                        target_idx = item["index"]
                         break
-                
-                if not found:
-                    logger.warning(f" Boletim {boletim_number} não encontrado na lista: {texts[:5]}...")
-                    # Fallback para o primeiro se não achar o específico (evita travar)
-                    latest_link_idx = 0
-            else:
-                # Pegar o de maior número
-                max_num = -1
-                for i, t in enumerate(texts):
-                    match = re.search(r'Boletim\s+(\d+)', t)
+            
+            if target_idx == -1:
+                # Pegar o de maior número (mais recente)
+                max_val = -1
+                for item in links_data:
+                    match = re.search(r'Boletim\s+(\d+)', item["text"])
                     if match:
                         num = int(match.group(1))
-                        if num > max_num:
-                            max_num = num
-                            latest_link_idx = i
+                        if num > max_val:
+                            max_val = num
+                            target_idx = item["index"]
                 
-                if latest_link_idx == -1: latest_link_idx = 0
+                if target_idx == -1:
+                    target_idx = links_data[0]["index"] # Fallback para o primeiro da lista
 
-            # Clicar no boletim escolhido
-            target_el = links_locator.nth(latest_link_idx)
-            logger.info(f"Clicando no boletim: '{texts[latest_link_idx]}'")
+            # 5. Clicar e aguardar
+            target_el = loc.nth(target_idx)
+            logger.info(f"Clicando no boletim: '{texts[target_idx]}'")
+            
+            # Garantir que o número do boletim atual está salvo
+            match = re.search(r'Boletim\s+(\d+)', texts[target_idx])
+            if match:
+                self.current_boletim_number = int(match.group(1))
+
             await target_el.click()
             await asyncio.sleep(5)
-            await self.page.wait_for_load_state("networkidle", timeout=20000)
+            await self.page.wait_for_load_state("networkidle", timeout=30000)
             
+            # Verificar se mudou para a página do boletim
+            if "visualizar" in self.page.url.lower() or await self.page.locator('text="Gerar .xlsx"').count() > 0:
+                logger.info(f"[OK] Chegou à página do boletim {self.current_boletim_number}")
+                return True
+            
+            logger.warning("Navegação concluída mas não detectou a página do boletim. Prosseguindo assim mesmo...")
             return True
 
         except Exception as e:
-            logger.error(f" Erro ao navegar ao boletim: {e}", exc_info=True)
+            logger.error(f"Erro ao navegar ao boletim: {e}", exc_info=True)
             return False
 
     async def export_xlsx(self) -> str | None:
         """
-        Clica no boto de exportar Excel e aguarda o download.
+        Exporta o XLSX do boletim atual.
         """
         try:
-            logger.info("Exportando dados em XLSX...")
+            logger.info("Iniciando exportação XLSX...")
             
-            # Garantir que estamos na página do boletim (esperar o botão aparecer)
-            xlsx_btn_selector = 'button:has-text("Gerar .xlsx"), text="Gerar .xlsx"'
+            # 1. Aguardar botão aparecer
+            xlsx_btn_selector = 'button:has-text("Gerar .xlsx"), a:has-text("Gerar .xlsx"), .btn:has-text("Gerar .xlsx")'
             try:
-                await self.page.wait_for_selector(xlsx_btn_selector, timeout=15000)
-            except:
-                logger.warning("Botão XLSX não apareceu rapidamente. Verificando URL...")
-                if "boletim" not in self.page.url.lower():
-                    logger.error("Não parece estar na página de um boletim para exportar.")
-                    return None
-
-            # Rolagem para garantir que elementos SPA carreguem
-            await self.page.mouse.wheel(0, 5000)
-            await asyncio.sleep(2)
-
-            async with self.page.expect_download(timeout=120000) as download_info:
-                # Tentar clicar via vários métodos
                 btn = self.page.locator(xlsx_btn_selector).first
+                await self.page.wait_for_selector(xlsx_btn_selector, timeout=20000)
+            except:
+                logger.warning("Botão XLSX não visível. Tentando rolar e fechar modais...")
+                await self._close_welcome_modal()
+                await self.page.mouse.wheel(0, 2000)
+                await asyncio.sleep(2)
+                btn = self.page.locator(xlsx_btn_selector).first
+
+            # 2. Selecionar todos os itens se necessário (SPA rule)
+            try:
+                # Alguns portais exigem marcar um checkbox de "Selecionar todos" antes de exportar
+                select_all = self.page.locator('input[type="checkbox"], .select-all').first
+                if await select_all.is_visible(timeout=2000):
+                    await select_all.click()
+                    await asyncio.sleep(1)
+            except: pass
+
+            # 3. Clicar e baixar
+            logger.info("Clicando no botão 'Gerar .xlsx'...")
+            
+            async with self.page.expect_download(timeout=90000) as download_info:
                 await btn.click(force=True)
                 
             download = await download_info.value
@@ -396,111 +376,11 @@ class ConLicitacaoScraper:
             filepath = os.path.join(config.XLSX_DIR, filename)
             await download.save_as(filepath)
             
-            logger.info(f"[OK] XLSX exportado: {filepath}")
+            logger.info(f"[OK] XLSX salvo em: {filepath}")
             return filepath
 
         except Exception as e:
-            logger.error(f"[ERR] Erro ao exportar XLSX: {e}")
-            return None
-            
-            latest_link = links_locator.nth(latest_link_idx)
-
-            if await latest_link.is_visible(timeout=10000):
-                await latest_link.scroll_into_view_if_needed()
-                await latest_link.click()
-                logger.info(f"Clicou no {texts[latest_link_idx]}")
-            else:
-                logger.warning("Link do boletim no est visvel")
-                return False
-
-            await asyncio.sleep(3)
-            await self.page.wait_for_load_state("networkidle", timeout=30000)
-            await self._delay()
-
-            # Verificar se estamos na pgina do boletim (procurar "Total de X licitaes")
-            total_text = self.page.locator(r'text=/Total de \d+ licita/')
-            if await total_text.is_visible(timeout=5000):
-                text = await total_text.inner_text()
-                logger.info(f"[OK] Navegao ao boletim realizada: {text}")
-                return True
-
-            # Fallback: verificar se boto "Gerar .xlsx" existe
-            xlsx_btn = self.page.locator('text="Gerar .xlsx"').first
-            if await xlsx_btn.is_visible(timeout=3000):
-                logger.info(" Navegao ao boletim realizada (boto XLSX encontrado)")
-                return True
-
-            logger.warning(" No foi possvel confirmar que estamos no boletim")
-            return False
-
-        except Exception as e:
-            logger.error(f" Erro ao navegar ao boletim: {e}")
-            return False
-
-    async def export_xlsx(
-        self, 
-        boletim_number: int | None = None,
-        boletim_url: str | None = None
-    ) -> str | None:
-        """
-        Exporta os dados do boletim em formato XLSX clicando no boto 'Gerar .xlsx'.
-        Args:
-            boletim_number: Nmero do boletim para navegar
-            boletim_url: URL direta para navegar (opcional)
-        Returns: Caminho do arquivo XLSX baixado, ou None se falhar.
-        """
-        try:
-            # Sempre navegar ao boletim antes de exportar
-            if boletim_url:
-                await self.navigate_to_boletim_url(boletim_url)
-            else:
-                # boletim_number=None → navega ao mais recente automaticamente
-                await self.navigate_to_boletim(boletim_number)
-                
-            logger.info("Exportando dados em XLSX...")
-
-            # Selecionar boletim antes de exportar (necessrio no SPA)
-            try:
-                sel_boletim = self.page.locator('text="Selecionar boletim"').first
-                if await sel_boletim.is_visible(timeout=2000):
-                    await sel_boletim.click()
-                    await asyncio.sleep(1)
-                    logger.info("'Selecionar boletim' marcado")
-            except Exception:
-                pass  # Prosseguir mesmo sem marcar
-
-            # Rolar at o fim da pgina para garantir que todos os 57+ itens foram carregados no DOM
-            # Isso costuma ajudar o SPA a habilitar o boto de exportao completa
-            logger.info("Rolando at o final para carregar todos os itens...")
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(3)
-
-            # Clicar no boto "Gerar .xlsx" e capturar o download
-            xlsx_button = self.page.locator('text="Gerar .xlsx"').first
-            
-            # Esperar o boto estar habilitado (pode demorar no SPA enquanto carrega dados)
-            logger.info("Aguardando botao XLSX ficar habilitado...")
-            try:
-                await xlsx_button.scroll_into_view_if_needed()
-                # Tentar esperar por um estado 'enabled' explcito ou apenas dar tempo
-                await asyncio.sleep(10) # Aumentar tempo para boletins grandes
-            except Exception:
-                pass
-
-            async with self.page.expect_download(timeout=config.DOWNLOAD_TIMEOUT * 1000) as download_info:
-                # Tentar clicar. Se ainda estiver desabilitado, o Playwright vai esperar at o timeout.
-                await xlsx_button.click(timeout=90000)
-                logger.info("[OK] Botao Gerar .xlsx clicado")
-
-            download = await download_info.value
-            filepath = os.path.join(config.XLSX_DIR, download.suggested_filename or "boletim.xlsx")
-            await download.save_as(filepath)
-
-            logger.info(f"[OK] XLSX exportado: {filepath}")
-            return filepath
-
-        except Exception as e:
-            logger.error(f"[ERR] Erro ao exportar XLSX: {e}")
+            logger.error(f"Falha na exportação XLSX: {e}")
             return None
 
     async def download_edital(self, numero_conlicitacao: str, favorite: bool = False) -> str | None:
@@ -1042,7 +922,7 @@ async def run_scraping_flow(
                 return {"success": False, "error": "Falha ao navegar ao boletim"}
 
         # Tentar XLSX
-        xlsx_path = await scraper.export_xlsx(boletim_number)
+        xlsx_path = await scraper.export_xlsx()
         licitacoes = []
         if xlsx_path:
             from .pdf_parser import parse_xlsx
