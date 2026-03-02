@@ -232,47 +232,50 @@ async def process_boletim(
                     continue
 
                 edital_label = lic.get('edital') or lic.get('numero_conlicitacao', 'S/N')
-                orgao_label  = lic.get('orgao', '')
-
-                # Localizar o PDF a enviar:
+                
+                # Localizar os PDFs a enviar:
                 # 1. Se for PDF direto → usar diretamente
                 # 2. Se for ZIP → a pasta extraída tem o mesmo nome sem .zip
-                #    Varrer essa pasta em busca do maior PDF
-                pdf_to_send = None
+                pdf_candidates = []
 
                 if raw_path.lower().endswith(".pdf") and os.path.isfile(raw_path):
-                    pdf_to_send = raw_path
+                    pdf_candidates = [raw_path]
                 else:
-                    # Pasta extraída: zip_path sem extensão
                     extract_dir = os.path.splitext(raw_path)[0]
-                    candidates = []
-
                     if os.path.isdir(extract_dir):
                         for root, _, files in os.walk(extract_dir):
                             for f in files:
                                 if f.lower().endswith(".pdf"):
-                                    candidates.append(os.path.join(root, f))
+                                    pdf_candidates.append(os.path.join(root, f))
 
-                    if not candidates and os.path.isfile(raw_path):
+                    if not pdf_candidates and os.path.isfile(raw_path):
                         # ZIP ainda não foi extraído — processar agora
                         edital_data = process_edital_download(raw_path)
-                        candidates = edital_data.get("pdf_files", [])
+                        pdf_candidates = edital_data.get("pdf_files", [])
 
-                    if candidates:
-                        # Enviar o maior PDF (geralmente o edital principal)
-                        pdf_to_send = max(candidates, key=lambda p: os.path.getsize(p) if os.path.isfile(p) else 0)
-
-                if not pdf_to_send or not os.path.isfile(pdf_to_send):
+                if not pdf_candidates:
                     logger.warning(f"[WHATSAPP] Nenhum PDF encontrado para {edital_label}, pulando envio.")
                     continue
 
-                caption = f"📎 Edital {edital_label} — {orgao_label}".strip(" —")
-                ok = send_whatsapp_document(pdf_to_send, caption=caption)
-                if ok:
-                    pdfs_enviados += 1
-                    logger.info(f"[WHATSAPP] PDF enviado: {edital_label}")
-                else:
-                    logger.warning(f"[WHATSAPP] Falha ao enviar PDF: {edital_label}")
+                # Ordenar por tamanho (maior primeiro) e limitar a 5 arquivos para evitar spam
+                pdf_candidates = sorted(
+                    pdf_candidates, 
+                    key=lambda p: os.path.getsize(p) if os.path.isfile(p) else 0, 
+                    reverse=True
+                )[:5]
+
+                for pdf_to_send in pdf_candidates:
+                    if not os.path.isfile(pdf_to_send):
+                        continue
+
+                    filename = os.path.basename(pdf_to_send)
+                    caption = f"📎 Edital {edital_label} — {filename}".strip(" —")
+                    ok = send_whatsapp_document(pdf_to_send, caption=caption)
+                    if ok:
+                        pdfs_enviados += 1
+                        logger.info(f"[WHATSAPP] PDF enviado: {filename} ({edital_label})")
+                    else:
+                        logger.warning(f"[WHATSAPP] Falha ao enviar PDF: {filename}")
 
             if pdfs_enviados:
                 logger.info(f"[WHATSAPP] {pdfs_enviados} PDF(s) de Alta aderência enviados via WhatsApp")
